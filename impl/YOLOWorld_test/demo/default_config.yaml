@@ -1,0 +1,82 @@
+# old
+## Usage in every cpp file:
+#   #include "common/utils/config_manager.hpp"
+#   auto config = ConfigManager::getInstance();
+#   auto num = config.get<int>("algo.confidence", 0);
+#   auto name = config.get<std::string>("platform.name", "UNKNOWN");
+#   auto flag = config.get<bool>("algo.multiLabel", true);
+
+platform:
+  # 支持： ascend|sophon|jetson|cpu
+  name: ascend
+
+algo:
+  # YOLOWorld 模型文件名（请将实际的 .om 文件放到 demo/data/model/ 目录）
+  modelName: yoloworld_smoke.om
+  confidence: 0.5
+  nms: 0.45
+  multiLabel: false
+  numClasses: 20
+  osd: true
+  labelMap:
+    "0": "construction worker"
+    "1": "paint bucket"
+    "2": "plastic paint bucket"
+    "3": "small paint can"
+    "4": "white plastic bucket"
+    "5": "cardboard box"
+    "6": "stacked cardboard boxes"
+    "7": "cement bag"
+    "8": "woven polypropylene sack"
+    "9": "PVC conduit"
+    "10": "wooden plank"
+    "11": "metal strip"
+    "12": "mortar wheelbarrow"
+    "13": "flatbed hand trolley"
+    "14": "electric cable coil"
+    "15": "mop"
+    "16": "broom"
+    "17": "broken brick"
+    "18": "construction waste"
+    "19": "fire extinguisher"
+
+
+app:
+  # 支持类型: sophon|ascend|gpu|cpu
+  platform: ascend
+
+  # 模型路径，不包括名字
+  modelDir: demo/data/model
+
+  # 支持类型：directory| rtsp stream| mp4 file
+  input: demo/data/image
+  #  input: rtsp://admin:cisdi123@192.168.11.198:5504/Streaming/Channels/101
+
+  # 仅input为图片的时候有效，表示是否无限循环
+  infinite: false
+
+  # stream url|file directory|mp4
+  out: demo/out
+  #  out: rtsp://192.168.11.73:8554/1
+  #  out: rtmp://192.168.11.73:1945/1
+
+  # 推理频率
+  inferFrequency: 25
+
+  # type: DETECTION|DETECTION_PROPERTY|SEGMENT
+  type: DETECTION_PROPERTY
+
+  # 是否渲染
+  osd: true
+  service:
+    websocket:
+  #    port: 1032
+
+  fence:
+  # roiInfoSetExt:
+  #     - name: 多边形
+  #     # 支持类型: POLYGON|RECTANGLE
+  #       shapeType: POLYGON
+  #       intersectionRatio: 0.5
+  #       location: [1, 2, 3, 4, 5, 6, 7, 8]
+  innerInit: true
