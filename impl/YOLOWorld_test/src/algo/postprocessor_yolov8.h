@@ -68,13 +68,18 @@ class FASTDEPLOY_DECL YOLOv8Postprocessor {
     for (size_t i = 0; i < num_elements; ++i) { data[i] /= 2.0f; }
   }
 
+  // 调试开关：true=打印 shape/原始值/NMS结果，确认格式后改 false
+  void SetDebugPrint(bool v) { debug_print_ = v; }
+  bool GetDebugPrint() const { return debug_print_; }
+
  protected:
   float conf_threshold_;
   float nms_threshold_;
-  bool multi_label_;
+  bool  multi_label_;
   float max_wh_;
-  int num_classes_;       // 类别数，从 config 读取，默认 20
-  bool cls_need_sigmoid_; // 类别通道是否需要 sigmoid，默认 true
+  int   num_classes_;       // 类别数，从 config 读取，默认 20
+  bool  cls_need_sigmoid_;  // 类别通道是否需要 sigmoid，默认 true
+  bool  debug_print_;       // 调试打印开关
 };
 
 }  // namespace detection
