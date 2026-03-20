@@ -11,11 +11,11 @@ platform:
   name: ascend
 
 algo:
-  # YOLOWorld 模型文件名（请将实际的 .om 文件放到 demo/data/model/ 目录）
-  modelName: yoloworld_smoke.om
+  # YOLOWorld 模型文件名（将实际的 .om 文件放到 demo/data/model/ 目录）
+  modelName: yolov8-world.om
   confidence: 0.5
   nms: 0.45
-  multiLabel: false
+  multiLabel:false
   numClasses: 20
   clsNeedSigmoid: true    # logits=true（模型输出未经sigmoid）；已是概率则改为false
   osd: true

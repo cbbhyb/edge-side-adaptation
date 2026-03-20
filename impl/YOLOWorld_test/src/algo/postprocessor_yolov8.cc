@@ -113,26 +113,39 @@ bool YOLOv8Postprocessor::Run(
       float y2 = (ay + rb_y) * st;
 
       // ----- 读取类别分数：channel 4~23 -----
-      float max_score = -1.f;
-      int   best_cls  = -1;
-      for (int c = 0; c < num_classes_; ++c) {
-        float logit = bd[(4 + c) * num_anchors + i];
-        float score = cls_need_sigmoid_ ? (1.f / (1.f + expf(-logit))) : logit;
-        if (score > max_score) {
-          max_score = score;
-          best_cls  = c;
+      if (multi_label_) {
+        // multiLabel=true：每个超阈值的类都独立产生一个候选框
+        // 不同类的框用 max_wh_ 偏移拉开空间距离，使 NMS 只在同类内生效
+        for (int c = 0; c < num_classes_; ++c) {
+          float logit = bd[(4 + c) * num_anchors + i];
+          float score = cls_need_sigmoid_ ? (1.f / (1.f + expf(-logit))) : logit;
+          if (score <= conf_threshold_) continue;
+
+          float offset = c * max_wh_;
+          (*results)[bs].boxes.emplace_back(std::array<float, 4>{
+              x1 + offset, y1 + offset, x2 + offset, y2 + offset});
+          (*results)[bs].label_ids.push_back(c);
+          (*results)[bs].scores.push_back(score);
         }
+      } else {
+        // multiLabel=false：只取20类中置信度最高的那一个
+        float max_score = -1.f;
+        int   best_cls  = -1;
+        for (int c = 0; c < num_classes_; ++c) {
+          float logit = bd[(4 + c) * num_anchors + i];
+          float score = cls_need_sigmoid_ ? (1.f / (1.f + expf(-logit))) : logit;
+          if (score > max_score) {
+            max_score = score;
+            best_cls  = c;
+          }
+        }
+        if (max_score <= conf_threshold_) continue;
+
+        (*results)[bs].boxes.emplace_back(std::array<float, 4>{
+            x1, y1, x2, y2});
+        (*results)[bs].label_ids.push_back(best_cls);
+        (*results)[bs].scores.push_back(max_score);
       }
-
-      if (max_score <= conf_threshold_) continue;
-
-      // ----- NMS 偏移（multi_label 模式）-----
-      float offset = multi_label_ ? best_cls * max_wh_ : 0.f;
-
-      (*results)[bs].boxes.emplace_back(std::array<float, 4>{
-          x1 + offset, y1 + offset, x2 + offset, y2 + offset});
-      (*results)[bs].label_ids.push_back(best_cls);
-      (*results)[bs].scores.push_back(max_score);
     }
 
     if ((*results)[bs].boxes.empty()) continue;
