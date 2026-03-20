@@ -17,6 +17,7 @@ algo:
   nms: 0.45
   multiLabel: false
   numClasses: 20
+  clsNeedSigmoid: true    # logits=true（模型输出未经sigmoid）；已是概率则改为false
   osd: true
   labelMap:
     "0": "construction worker"
