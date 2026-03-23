@@ -13,18 +13,13 @@
 // limitations under the License.
 
 // ============================================================
-//  【调试版后处理】YOLOWorld 自适应 layout
+//  YOLOWorld 后处理
 //
-//  支持两种输出布局，由 shape 自动判断：
-//    CHW模式: [B, 24, 8400]  — 原始假设
-//    HWC模式: [B, 8400, 24]  — 另一种可能
+//  输出布局：CHW [B, 24, 8400]（已由 npy 分析确认）
+//    通道 0~3 : cx, cy, w, h（中心坐标+宽高，640x640空间，需转xyxy）
+//    通道 4~23: 20 类别 logits（clsNeedSigmoid 由 yaml 控制）
 //
-//  每次推理会打印：
-//    1. 张量 shape 及检测到的布局
-//    2. 前 5 个 anchor 的原始 bbox 值 + 最大类别分数（sigmoid前后）
-//    3. NMS 后框的数量及前几个框的坐标
-//
-//  确认格式正确后，可删除 DEBUG_PRINT 段落（或关掉 debug_print_ 开关）
+// 
 // ============================================================
 
 #include "postprocessor_yolov8.h"
@@ -48,7 +43,7 @@ YOLOv8Postprocessor::YOLOv8Postprocessor() {
   max_wh_           = 7680.0f;
   num_classes_      = 20;
   cls_need_sigmoid_ = true;
-  debug_print_      = true;   // ← 调试开关：确认无误后改 false
+  debug_print_      = true;
 }
 
 YOLOv8Postprocessor::YOLOv8Postprocessor(float conf_threshold,
@@ -62,17 +57,6 @@ YOLOv8Postprocessor::YOLOv8Postprocessor(float conf_threshold,
       num_classes_(20),
       cls_need_sigmoid_(true),
       debug_print_(true) {}
-
-// ----------------------------------------------------------------
-//  辅助：从 data 读取一个值，两种 layout 封装成统一接口
-//    CHW: data[ch * num_anchors + idx]
-//    HWC: data[idx * total_ch   + ch ]
-// ----------------------------------------------------------------
-static inline float readVal(const float* data, int ch, int idx,
-                             int num_anchors, int total_ch, bool is_chw) {
-  return is_chw ? data[ch * num_anchors + idx]
-                : data[idx * total_ch   + ch ];
-}
 
 bool YOLOv8Postprocessor::Run(
     const std::vector<FDTensor>& tensors,
@@ -90,65 +74,30 @@ bool YOLOv8Postprocessor::Run(
     return false;
   }
 
-  // ---- 解析 shape，自动判断布局 ----
-  //   期望：[B, C, N] (CHW)  或  [B, N, C] (HWC)
-  //   其中 C = 4 + num_classes_,  N = 8400
-  const int expected_ch    = 4 + num_classes_;   // e.g. 24
-  const int expected_anch  = 8400;
+  // ---- 解析 shape，固定 CHW [B, 24, 8400] ----
+  const int expected_ch   = 4 + num_classes_;  // 24
+  const int expected_anch = 8400;
 
   int batch       = static_cast<int>(t.shape[0]);
   int dim1        = static_cast<int>(t.shape[1]);
   int dim2        = static_cast<int>(t.shape[2]);
+  int num_anchors = dim2;
+  int total_ch    = dim1;
 
-  bool is_chw = false;   // CHW: [B, 24, 8400]
-  bool is_hwc = false;   // HWC: [B, 8400, 24]
-  int  num_anchors = expected_anch;
-  int  total_ch    = expected_ch;
-
-  if (dim1 == expected_ch && dim2 == expected_anch) {
-    is_chw = true;
-    num_anchors = dim2;
-    total_ch    = dim1;
-  } else if (dim1 == expected_anch && dim2 == expected_ch) {
-    is_hwc = true;
-    num_anchors = dim1;
-    total_ch    = dim2;
-  } else {
-    // shape 不符合预期，但继续尝试用 dim 推断
+  if (dim1 != expected_ch || dim2 != expected_anch) {
     fprintf(stderr,
-      "[PostProc] WARN: unexpected shape [%d, %d, %d], "
-      "expected [B, %d, %d] or [B, %d, %d]. Will try CHW.\n",
-      batch, dim1, dim2,
-      expected_ch, expected_anch,
-      expected_anch, expected_ch);
-    // 强制按 CHW 尝试
-    is_chw      = true;
-    num_anchors = dim2;
-    total_ch    = dim1;
+      "[PostProc] WARN: unexpected shape [%d, %d, %d], expected [B, %d, %d].\n",
+      batch, dim1, dim2, expected_ch, expected_anch);
   }
 
   if (debug_print_) {
     fprintf(stderr,
-      "[PostProc] Shape=[%d,%d,%d]  Layout=%s  num_anchors=%d  total_ch=%d\n"
+      "[PostProc] Shape=[%d,%d,%d]  Layout=CHW [B,C,N]  num_anchors=%d  total_ch=%d\n"
       "           num_classes=%d  clsNeedSigmoid=%s  conf_thresh=%.3f\n",
       batch, dim1, dim2,
-      is_chw ? "CHW [B,C,N]" : "HWC [B,N,C]",
       num_anchors, total_ch,
       num_classes_, cls_need_sigmoid_ ? "true" : "false",
       conf_threshold_);
-  }
-
-  // ---- 生成 anchor_points（固定 80x80 / 40x40 / 20x20）----
-  struct AnchorPt { float x, y, stride; };
-  std::vector<AnchorPt> anchor_pts;
-  anchor_pts.reserve(8400);
-  const int   feat_hw[3][2] = {{80,80},{40,40},{20,20}};
-  const float strides[3]    = {8.f, 16.f, 32.f};
-  for (int s = 0; s < 3; ++s) {
-    int h = feat_hw[s][0], w = feat_hw[s][1];
-    for (int i = 0; i < h; ++i)
-      for (int j = 0; j < w; ++j)
-        anchor_pts.push_back({j + 0.5f, i + 0.5f, strides[s]});
   }
 
   const float* data = reinterpret_cast<const float*>(t.Data());
@@ -158,7 +107,7 @@ bool YOLOv8Postprocessor::Run(
     (*results)[bs].Clear();
     (*results)[bs].Reserve(num_anchors);
 
-    // 当前 batch 的起始偏移
+    // CHW: data[ch * num_anchors + anchor_idx]
     const float* bd = data + bs * num_anchors * total_ch;
 
     // ===== DEBUG: 打印前 5 个 anchor 的原始值 =====
@@ -166,85 +115,47 @@ bool YOLOv8Postprocessor::Run(
       fprintf(stderr, "[PostProc] --- batch=%d: first 5 anchors (raw) ---\n", bs);
       int print_n = std::min(5, num_anchors);
       for (int i = 0; i < print_n; ++i) {
-        float lt_x = readVal(bd, 0, i, num_anchors, total_ch, is_chw);
-        float lt_y = readVal(bd, 1, i, num_anchors, total_ch, is_chw);
-        float rb_x = readVal(bd, 2, i, num_anchors, total_ch, is_chw);
-        float rb_y = readVal(bd, 3, i, num_anchors, total_ch, is_chw);
-        // 最大类别 logit
+        float cx = bd[0 * num_anchors + i];
+        float cy = bd[1 * num_anchors + i];
+        float w  = bd[2 * num_anchors + i];
+        float h  = bd[3 * num_anchors + i];
+        float x1 = cx - w * 0.5f;
+        float y1 = cy - h * 0.5f;
+        float x2 = cx + w * 0.5f;
+        float y2 = cy + h * 0.5f;
         float max_logit = -1e9f;
         int   max_cls   = -1;
         for (int c = 0; c < num_classes_; ++c) {
-          float v = readVal(bd, 4 + c, i, num_anchors, total_ch, is_chw);
+          float v = bd[(4 + c) * num_anchors + i];
           if (v > max_logit) { max_logit = v; max_cls = c; }
         }
         float max_score = cls_need_sigmoid_
             ? (1.f / (1.f + expf(-max_logit)))
             : max_logit;
-        // 解码成像素坐标（供对比参考）
-        float ax = anchor_pts[i].x, ay = anchor_pts[i].y;
-        float st = anchor_pts[i].stride;
-        float px1 = (ax - lt_x) * st;
-        float py1 = (ay - lt_y) * st;
-        float px2 = (ax + rb_x) * st;
-        float py2 = (ay + rb_y) * st;
         fprintf(stderr,
-          "  anchor[%d] raw_bbox=(%.3f,%.3f,%.3f,%.3f) "
-          "decoded_xyxy=(%.1f,%.1f,%.1f,%.1f) "
+          "  anchor[%d] cxcywh=(%.1f,%.1f,%.1f,%.1f) xyxy=(%.1f,%.1f,%.1f,%.1f) "
           "max_cls=%d raw_logit=%.4f score=%.4f\n",
-          i, lt_x, lt_y, rb_x, rb_y,
-          px1, py1, px2, py2,
+          i, cx, cy, w, h, x1, y1, x2, y2,
           max_cls, max_logit, max_score);
-      }
-
-      // 同样用 HWC 视角打印前 5 个，帮助对比哪种更合理
-      if (is_chw) {
-        fprintf(stderr,
-          "[PostProc]   (为对比：如果 layout 其实是 HWC，则相同 5 个 anchor 原始值为:)\n");
-        for (int i = 0; i < print_n; ++i) {
-          float lt_x = readVal(bd, 0, i, num_anchors, total_ch, false/*HWC*/);
-          float lt_y = readVal(bd, 1, i, num_anchors, total_ch, false);
-          float rb_x = readVal(bd, 2, i, num_anchors, total_ch, false);
-          float rb_y = readVal(bd, 3, i, num_anchors, total_ch, false);
-          float max_logit = -1e9f; int max_cls = -1;
-          for (int c = 0; c < num_classes_; ++c) {
-            float v = readVal(bd, 4+c, i, num_anchors, total_ch, false);
-            if (v > max_logit) { max_logit = v; max_cls = c; }
-          }
-          float max_score = cls_need_sigmoid_
-              ? (1.f / (1.f + expf(-max_logit))) : max_logit;
-          float ax = anchor_pts[i].x, ay = anchor_pts[i].y;
-          float st = anchor_pts[i].stride;
-          fprintf(stderr,
-            "  anchor[%d] HWC raw_bbox=(%.3f,%.3f,%.3f,%.3f) "
-            "decoded_xyxy=(%.1f,%.1f,%.1f,%.1f) "
-            "max_cls=%d raw_logit=%.4f score=%.4f\n",
-            i, lt_x, lt_y, rb_x, rb_y,
-            (ax-lt_x)*st, (ay-lt_y)*st, (ax+rb_x)*st, (ay+rb_y)*st,
-            max_cls, max_logit, max_score);
-        }
       }
     }
     // ===== END DEBUG =====
 
     // ---- 主循环：候选框生成 ----
+    // bbox 通道 0~3 是 cx, cy, w, h，需转换为 xyxy
     for (int i = 0; i < num_anchors; ++i) {
-      float lt_x = readVal(bd, 0, i, num_anchors, total_ch, is_chw);
-      float lt_y = readVal(bd, 1, i, num_anchors, total_ch, is_chw);
-      float rb_x = readVal(bd, 2, i, num_anchors, total_ch, is_chw);
-      float rb_y = readVal(bd, 3, i, num_anchors, total_ch, is_chw);
-
-      float ax = anchor_pts[i].x;
-      float ay = anchor_pts[i].y;
-      float st = anchor_pts[i].stride;
-
-      float x1 = (ax - lt_x) * st;
-      float y1 = (ay - lt_y) * st;
-      float x2 = (ax + rb_x) * st;
-      float y2 = (ay + rb_y) * st;
+      float cx = bd[0 * num_anchors + i];
+      float cy = bd[1 * num_anchors + i];
+      float w  = bd[2 * num_anchors + i];
+      float h  = bd[3 * num_anchors + i];
+      float x1 = cx - w * 0.5f;
+      float y1 = cy - h * 0.5f;
+      float x2 = cx + w * 0.5f;
+      float y2 = cy + h * 0.5f;
 
       if (multi_label_) {
         for (int c = 0; c < num_classes_; ++c) {
-          float logit = readVal(bd, 4+c, i, num_anchors, total_ch, is_chw);
+          float logit = bd[(4 + c) * num_anchors + i];
           float score = cls_need_sigmoid_
               ? (1.f / (1.f + expf(-logit))) : logit;
           if (score <= conf_threshold_) continue;
@@ -259,7 +170,7 @@ bool YOLOv8Postprocessor::Run(
         float max_score = -1.f;
         int   best_cls  = -1;
         for (int c = 0; c < num_classes_; ++c) {
-          float logit = readVal(bd, 4+c, i, num_anchors, total_ch, is_chw);
+          float logit = bd[(4 + c) * num_anchors + i];
           float score = cls_need_sigmoid_
               ? (1.f / (1.f + expf(-logit))) : logit;
           if (score > max_score) { max_score = score; best_cls = c; }
@@ -318,7 +229,6 @@ bool YOLOv8Postprocessor::Run(
       by2 = std::min(by2, ipt_h);
     }
 
-    // ===== DEBUG: 打印 NMS 后结果 =====
     if (debug_print_) {
       fprintf(stderr,
         "[PostProc] batch=%d: post-NMS boxes=%zu  (scale=%.4f pad_h=%.1f pad_w=%.1f)\n",
@@ -333,7 +243,6 @@ bool YOLOv8Postprocessor::Run(
           (*results)[bs].scores[i]);
       }
     }
-    // ===== END DEBUG =====
   }
 
   return true;
